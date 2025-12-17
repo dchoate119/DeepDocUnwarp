@@ -34,14 +34,15 @@ To design and train a deep learning pipeline that reconstructs a flat, readable 
 ### TODO 
 **Milestone 1**
 - [x] Load and visualize dataset 
-- [ ] Implement simple encoder-decoder model
-- [ ] Train on the dataset with MSE loss 
-- [ ] Evaluate on validation set 
+- [x] Implement simple encoder-decoder model
+- [x] Train on the dataset with MSE loss 
+- [x] Evaluate on validation set 
 
 **Milestone 2**
 - [ ] Integrate pretrained backbone
 - [ ] Add skip connections (U-Net style)
 - [ ] Experiment with different loss functions (L1, perceptual, SSIM)
+- [ ] Check todo list for training metrics
 - [ ] Implement proper evaluation metrics 
 
 **Milestone 3** (if time)
@@ -57,3 +58,4 @@ To design and train a deep learning pipeline that reconstructs a flat, readable 
 - [ ] <train.ipynb> code used to train model, training loop and loss curves 
 - [ ] <evaluate.py> loads weights and calculates SSIM on validation set 
 - [ ] <best_model.pth> trained model weights 
+
