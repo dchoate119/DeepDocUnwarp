@@ -410,6 +410,7 @@ def visualize_batch_pred(batch: Dict[str, torch.Tensor], num_samples: int = 4):
         gt = batch['ground_truth'][i] * std + mean
         pred = batch['predicted'][i] * std + mean
 
+
         rgb_np = np.clip(rgb.permute(1,2,0).cpu().numpy(), 0, 1)
         gt_np = np.clip(gt.permute(1,2,0).cpu().numpy(), 0, 1)
         pred_np = np.clip(pred.permute(1,2,0).cpu().numpy(), 0, 1)
@@ -425,6 +426,63 @@ def visualize_batch_pred(batch: Dict[str, torch.Tensor], num_samples: int = 4):
         axes[i,2].imshow(pred_np)
         axes[i,2].set_title("Predicted")
         axes[i,2].axis('off')
+
+
+    plt.tight_layout()
+    plt.show()
+
+
+def visualize_uv_flow(
+    uv_pred: torch.Tensor,
+    uv_gt: Optional[torch.Tensor] = None,
+    num_samples: int = 4,
+    title_pred: str = "Predicted UV Flow",
+    title_gt: str = "Ground Truth UV"
+):
+    """
+    Visualize predicted UV maps (and optionally ground truth UV) as optical-flow-style color fields.
+
+    Args:
+        uv_pred: [B,2,H,W] predicted UV tensor
+        uv_gt: [B,2,H,W] optional ground truth UV tensor
+        num_samples: number of samples to visualize
+        title_pred: title for predicted UV
+        title_gt: title for GT UV
+    """
+
+    import matplotlib.colors as mcolors
+    import matplotlib.pyplot as plt
+
+    num_samples = min(num_samples, uv_pred.shape[0])
+    num_cols = 2 if uv_gt is not None else 1
+    fig, axes = plt.subplots(1, num_samples * num_cols, figsize=(5 * num_samples * num_cols, 5))
+    if num_samples * num_cols == 1:
+        axes = [axes]
+    elif num_samples == 1 and uv_gt is not None:
+        axes = [axes[0], axes[1]]
+
+    def uv_to_rgb(uv: torch.Tensor):
+        u = uv[0]
+        v = uv[1]
+        mag = torch.sqrt(u ** 2 + v ** 2)
+        mag = mag / (mag.max() + 1e-8)
+        ang = torch.atan2(v, u)
+        hsv = torch.zeros(3, *u.shape, device=uv.device)
+        hsv[0] = (ang + torch.pi) / (2 * torch.pi)
+        hsv[1] = 1.0
+        hsv[2] = mag
+        hsv_np = hsv.permute(1, 2, 0).cpu().numpy()
+        return mcolors.hsv_to_rgb(hsv_np)
+
+    for i in range(num_samples):
+        axes[i * num_cols].imshow(uv_to_rgb(uv_pred[i]))
+        axes[i * num_cols].set_title(f"{title_pred} #{i}")
+        axes[i * num_cols].axis("off")
+
+        if uv_gt is not None:
+            axes[i * num_cols + 1].imshow(uv_to_rgb(uv_gt[i]))
+            axes[i * num_cols + 1].set_title(f"{title_gt} #{i}")
+            axes[i * num_cols + 1].axis("off")
 
     plt.tight_layout()
     plt.show()

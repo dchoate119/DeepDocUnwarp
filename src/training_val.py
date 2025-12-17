@@ -17,7 +17,8 @@ from PIL import Image
 import numpy as np
 
 from dataset_loader import get_dataloaders, visualize_batch
-from reconstruction_model import DocumentReconstructionModel
+# from reconstruction_model import DocumentReconstructionModel
+from reconstruction_model import ResNetUnet
 from reconstruction_model import MaskedL1Loss, MaskedMSELoss, SSIMLoss, UVReconstructionLoss
 
 
@@ -61,7 +62,11 @@ def train_one_epoch(
         # Forward pass
         optimizer.zero_grad()
         # output = model(rgb) # IF NOT USING FLOW PREDICTOR
-        output, flow = model(rgb)
+        outputs = model(rgb, predict_uv=True)
+        warped = outputs['warped']
+        flow = outputs['flow']
+        uv = outputs.get('uv', None)
+        # output, flow = model(rgb)
         # print(f"Finished batch {batch_idx}")
 
         # Compute loss
@@ -71,7 +76,14 @@ def train_one_epoch(
             loss = criterion(output, ground_truth)
         elif isinstance(criterion, UVReconstructionLoss):
             # Extract additional outputs if avail for UV-based
-            losses=criterion(pred_image=output, target_image=ground_truth, mask=mask)
+            losses = criterion(
+                pred_image=warped,
+                target_image=ground_truth,
+                pred_uv=uv,
+                target_uv=batch.get('uv', None),  # optional UV supervision
+                flow=flow,
+                mask=mask
+            )
             loss=losses['total']
         else:
             # Standard (MSE, L1)
@@ -135,7 +147,11 @@ def validate(
                 mask = mask.to(device)
 
             # output = model(rgb)
-            output, flow = model(rgb)
+            # output, flow = model(rgb)
+            outputs = model(rgb, predict_uv=True)
+            warped = outputs['warped']
+            flow = outputs['flow']
+            uv = outputs.get('uv', None)
 
             # Compute loss (standard or masked 
             if isinstance(criterion, (MaskedL1Loss, MaskedMSELoss)):
@@ -143,7 +159,14 @@ def validate(
             elif isinstance(criterion, SSIMLoss):
                 loss = criterion(output, ground_truth)
             elif isinstance(criterion, UVReconstructionLoss):
-                losses = criterion(pred_image=output, target_image=ground_truth, mask=mask)
+                losses = criterion(
+                    pred_image=warped,
+                    target_image=ground_truth,
+                    pred_uv=uv,
+                    target_uv=batch.get('uv', None),
+                    flow=flow,
+                    mask=mask
+                )
                 loss = losses['total']
             else:
                 loss = criterion(output, ground_truth)

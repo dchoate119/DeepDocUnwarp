@@ -5,6 +5,7 @@
 
 """ 
 OVERVIEW:
+Implementing a pretrained ResNet backbone 
 
 """
 
@@ -22,82 +23,57 @@ from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms
 from PIL import Image
 import numpy as np
+import timm
 
 
-class DocumentReconstructionModel(nn.Module):
+class ResNetUnet(nn.Module):
     """
-    Starter model for document dewarping (geometric correction).
-
-    IMPORTANT: The goal is GEOMETRIC RECONSTRUCTION, not photometric matching!
-    - The rendered images have lighting/shading effects
-    - Your model should focus on learning the geometric transformation (UV/flow field)
-    - Don't worry about exact pixel intensities - focus on structure
-
-    TODO: Implement your own architecture here.
-    This is a simple U-Net-style baseline to get started.
-
-    Suggestions for improvement:
-    - Use a pretrained encoder from HuggingFace (e.g., ResNet, EfficientNet)
-    - Add attention mechanisms
-    - Use depth/UV information if available
-    - Experiment with different loss functions (SSIM is recommended!)
-    - Add skip connections
-    - Try different decoder architectures
-
-    IMPORTANT HINT: Consider using torch.nn.functional.grid_sample for differentiable warping!
-
-    One powerful approach for document reconstruction is to:
-    1. Predict a deformation/flow field (mapping from distorted space to flat space)
-    2. Use grid_sample to warp the input image according to this field
-    3. This allows the network to learn geometric transformations explicitly
-
-    Example usage of grid_sample:
-        # Predict a flow field [B, 2, H, W] representing (x, y) offsets
-        flow = self.flow_predictor(features)
-
-        # Create base grid and add flow to get sampling coordinates
-        grid = create_base_grid(B, H, W) + flow
-
-        # Sample from input image using the predicted grid
-        warped = torch.nn.functional.grid_sample(
-            input_image,
-            grid.permute(0, 2, 3, 1),  # [B, H, W, 2]
-            mode='bilinear',
-            padding_mode='border',
-            align_corners=True
-        )
+    Resnet pretrained backbone with adjusted decoder
     """
 
-    def __init__(self, in_channels: int = 3, base_channels: int = 64):
+    def __init__(self, backbone_name='resnet34', pretrained=True):
         super().__init__()
 
-        # TODO: Replace this simple architecture with your own design
-        # Consider using HuggingFace transformers or timm models as backbone
-
-        # NEW MODEL: U-Net with skip connections, flow predictor, differentiable warping
+        # NEW MODEL: RESNET ENCODER
 
         # Encoder
-        self.enc1 = self.conv_block(in_channels, base_channels)
-        self.enc2 = self.conv_block(base_channels, base_channels*2)
-        self.enc3 = self.conv_block(base_channels*2, base_channels*4)
+        self.backbone = timm.create_model(backbone_name, pretrained=pretrained, features_only=True)
 
-        self.pool = nn.MaxPool2d(2)
+        self.enc_channels = self.backbone.feature_info.channels()
 
-        # Bottleneck
-        self.bottleneck = self.conv_block(base_channels*4, base_channels*8)
 
         # Decoder 
-        self.up3 = nn.ConvTranspose2d(base_channels*8, base_channels*4, 2, stride=2)
-        self.dec3 = self.conv_block(base_channels*8, base_channels*4)
+        # e4 -> up3 (upsample from 512 -> 256) + skip e3 (256) => input to dec3 = 256 + 256 = 512
+        self.up3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
+        self.dec3 = self.conv_block(512, 256)
 
-        self.up2 = nn.ConvTranspose2d(base_channels*4, base_channels*2, 2, stride=2)
-        self.dec2 = self.conv_block(base_channels*4, base_channels*2)
+        # e3 -> up2 (256 -> 128) + skip e2 (128) => input to dec2 = 128 + 128 = 256
+        self.up2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.dec2 = self.conv_block(256, 128)
 
-        self.up1 = nn.ConvTranspose2d(base_channels*2, base_channels, 2, stride=2)
-        self.dec1 = self.conv_block(base_channels*2, base_channels)
+        # e2 -> up1 (128 -> 64) + skip e1 (64) => input to dec1 = 64 + 64 = 128
+        self.up1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.dec1 = self.conv_block(128, 64)
 
-        # Flow predictor: predicts (x, y) offsets for each pixel
-        self.flow_predictor = nn.Conv2d(base_channels, 2, kernel_size=3, padding=1)
+        # Optional final conv for flow/UV prediction from e0 (64 channels)
+        self.flow_predictor = nn.Conv2d(64, 2, kernel_size=3, padding=1)
+        self.uv_predictor = nn.Conv2d(64, 2, kernel_size=3, padding=1)
+        
+
+        # self.up3 = nn.ConvTranspose2d(self.enc_channels[3], self.enc_channels[2], kernel_size=2, stride=2)
+        # self.dec3 = self.conv_block(self.enc_channels[3]+self.enc_channels[2], self.enc_channels[2])
+
+        # self.up2 = nn.ConvTranspose2d(self.enc_channels[2], self.enc_channels[1], kernel_size=2, stride=2)
+        # self.dec2 = self.conv_block(self.enc_channels[2]+self.enc_channels[1], self.enc_channels[1])
+
+        # self.up1 = nn.ConvTranspose2d(self.enc_channels[1], self.enc_channels[0], kernel_size=2, stride=2)
+        # self.dec1 = self.conv_block(self.enc_channels[1]+self.enc_channels[0], self.enc_channels[0])
+
+        # # Final conv to match input channels for flow prediction
+        # self.flow_predictor = nn.Conv2d(self.enc_channels[0], 2, kernel_size=3, padding=1)
+        # # OPTIONAL: UV PREDICTOR
+        # self.uv_predictor = nn.Conv2d(self.enc_channels[0], 2, kernel_size=3, padding=1)
+
 
     def conv_block(self, in_ch, out_ch):
         return nn.Sequential(
@@ -106,33 +82,52 @@ class DocumentReconstructionModel(nn.Module):
             nn.Conv2d(out_ch, out_ch, 3, padding=1),
             nn.ReLU(inplace=True),
         )
+    def forward(
+        self, 
+        x: torch.Tensor,
+        predict_uv: bool = False
+    ) -> Dict[str, torch.Tensor]:
 
-    def forward(self, x):
+        """
+        Returns dict with warped, flow, uv
+        """
+
         B, C, H, W = x.shape
         device = x.device
 
         # Encoder
-        e1 = self.enc1(x)
-        e2 = self.enc2(self.pool(e1))
-        e3 = self.enc3(self.pool(e2))
-
-        # Bottleneck
-        b = self.bottleneck(self.pool(e3))
+        features = self.backbone(x)
+        # print("LENGTH OF FEATURES",len(features))
+        # for i, f in enumerate(features):
+        #     print(f"e{i} shape: {f.shape}")
+        e0, e1, e2, e3, e4 = features
 
         # Decoder with skip connections
-        d3 = self.dec3(torch.cat([self.up3(b), e3], dim=1))
+        d3 = self.dec3(torch.cat([self.up3(e4), e3], dim=1))
         d2 = self.dec2(torch.cat([self.up2(d3), e2], dim=1))
         d1 = self.dec1(torch.cat([self.up1(d2), e1], dim=1))
 
         # Predict flow field
         flow = self.flow_predictor(d1)  # [B, 2, H, W]
+        flow = F.interpolate(flow, size=(H, W), mode='bilinear', align_corners=True)
+
 
         # Warp input
         grid = create_base_grid(B, H, W, device)  # [B, H, W, 2]
         sampling_grid = grid + flow.permute(0, 2, 3, 1)
         warped = F.grid_sample(x, sampling_grid, mode='bilinear', padding_mode='border', align_corners=True)
 
-        return warped, flow
+        # uv = self.uv_predictor(d1) if predict_uv else None
+        uv = None
+        if predict_uv:
+            uv = self.uv_predictor(d1)
+            uv = F.interpolate(uv, size=(H, W), mode='bilinear', align_corners=True)
+
+        return {
+            'warped': warped,
+            'flow': flow,
+            'uv': uv
+        }
 
 
 
@@ -416,6 +411,21 @@ class UVReconstructionLoss(nn.Module):
         """
         losses = {}
 
+        device = pred_image.device
+        target_image = target_image.to(device)
+        if pred_uv is not None and target_uv is not None:
+            target_uv = target_uv.to(pred_uv.device)
+        if flow is not None:
+            flow = flow.to(device)
+        if mask is not None:
+            mask = mask.to(device)
+
+        # Slice target UV channels if they don't match pred_uv
+        if pred_uv is not None and target_uv is not None:
+            if target_uv.shape[1] != pred_uv.shape[1]:
+                target_uv = target_uv[:, :pred_uv.shape[1], :, :]
+
+            
         # 1. Reconstruction loss
         if self.use_ssim:
             # SSIM doesn't use mask (operates on full image structure)
@@ -426,6 +436,12 @@ class UVReconstructionLoss(nn.Module):
 
         # 2. UV supervision loss (if applicable)
         if self.uv_weight > 0 and pred_uv is not None and target_uv is not None:
+
+            # ADDING FIX
+            if pred_uv.shape[1] != target_uv.shape[1]:
+                # either crop or select the first 2 channels of target_uv
+                target_uv = target_uv[:, :pred_uv.shape[1], :, :]
+
             if self.use_ssim:
                 losses['uv'] = self.recon_loss(pred_uv, target_uv)
             else:
@@ -443,116 +459,3 @@ class UVReconstructionLoss(nn.Module):
         losses['total'] = total_loss
         return losses
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# # ORIGINAL BASIC NET
-
-
-
-# class DocumentReconstructionModel(nn.Module):
-#     """
-#     Starter model for document dewarping (geometric correction).
-
-#     IMPORTANT: The goal is GEOMETRIC RECONSTRUCTION, not photometric matching!
-#     - The rendered images have lighting/shading effects
-#     - Your model should focus on learning the geometric transformation (UV/flow field)
-#     - Don't worry about exact pixel intensities - focus on structure
-
-#     TODO: Implement your own architecture here.
-#     This is a simple U-Net-style baseline to get started.
-
-#     Suggestions for improvement:
-#     - Use a pretrained encoder from HuggingFace (e.g., ResNet, EfficientNet)
-#     - Add attention mechanisms
-#     - Use depth/UV information if available
-#     - Experiment with different loss functions (SSIM is recommended!)
-#     - Add skip connections
-#     - Try different decoder architectures
-
-#     IMPORTANT HINT: Consider using torch.nn.functional.grid_sample for differentiable warping!
-
-#     One powerful approach for document reconstruction is to:
-#     1. Predict a deformation/flow field (mapping from distorted space to flat space)
-#     2. Use grid_sample to warp the input image according to this field
-#     3. This allows the network to learn geometric transformations explicitly
-
-#     Example usage of grid_sample:
-#         # Predict a flow field [B, 2, H, W] representing (x, y) offsets
-#         flow = self.flow_predictor(features)
-
-#         # Create base grid and add flow to get sampling coordinates
-#         grid = create_base_grid(B, H, W) + flow
-
-#         # Sample from input image using the predicted grid
-#         warped = torch.nn.functional.grid_sample(
-#             input_image,
-#             grid.permute(0, 2, 3, 1),  # [B, H, W, 2]
-#             mode='bilinear',
-#             padding_mode='border',
-#             align_corners=True
-#         )
-#     """
-
-#     def __init__(self, in_channels: int = 3, out_channels: int = 3):
-#         super().__init__()
-
-#         # TODO: Replace this simple architecture with your own design
-#         # Consider using HuggingFace transformers or timm models as backbone
-
-#         # Simple encoder
-#         self.encoder = nn.Sequential(
-#             nn.Conv2d(in_channels, 64, 3, padding=1),
-#             nn.ReLU(inplace=True),
-#             nn.Conv2d(64, 64, 3, padding=1),
-#             nn.ReLU(inplace=True),
-#             nn.MaxPool2d(2),
-
-#             nn.Conv2d(64, 128, 3, padding=1),
-#             nn.ReLU(inplace=True),
-#             nn.Conv2d(128, 128, 3, padding=1),
-#             nn.ReLU(inplace=True),
-#             nn.MaxPool2d(2),
-#         )
-
-#         # Simple decoder
-#         self.decoder = nn.Sequential(
-#             nn.Conv2d(128, 128, 3, padding=1),
-#             nn.ReLU(inplace=True),
-#             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-
-#             nn.Conv2d(128, 64, 3, padding=1),
-#             nn.ReLU(inplace=True),
-#             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-
-#             nn.Conv2d(64, out_channels, 3, padding=1),
-#             nn.Tanh()  # Output range [-1, 1]
-#         )
-
-#     def forward(self, x: torch.Tensor) -> torch.Tensor:
-#         """
-#         Forward pass.
-
-#         Args:
-#             x: Input tensor [B, 3, H, W]
-
-#         Returns:
-#             Reconstructed image [B, 3, H, W]
-#         """
-#         # TODO: Implement your forward pass
-#         # Consider predicting a flow field and using grid_sample for warping!
-#         features = self.encoder(x)
-#         output = self.decoder(features)
-#         return output

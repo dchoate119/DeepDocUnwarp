@@ -1,0 +1,41 @@
+Reconstruction model notes: 
+
+
+IMPORTANT: The goal is GEOMETRIC RECONSTRUCTION, not photometric matching!
+    - The rendered images have lighting/shading effects
+    - Your model should focus on learning the geometric transformation (UV/flow field)
+    - Don't worry about exact pixel intensities - focus on structure
+
+    TODO: Implement your own architecture here.
+    This is a simple U-Net-style baseline to get started.
+
+    Suggestions for improvement:
+    - Use a pretrained encoder from HuggingFace (e.g., ResNet, EfficientNet)
+    - Add attention mechanisms
+    - Use depth/UV information if available
+    - Experiment with different loss functions (SSIM is recommended!)
+    - Add skip connections
+    - Try different decoder architectures
+
+    IMPORTANT HINT: Consider using torch.nn.functional.grid_sample for differentiable warping!
+
+    One powerful approach for document reconstruction is to:
+    1. Predict a deformation/flow field (mapping from distorted space to flat space)
+    2. Use grid_sample to warp the input image according to this field
+    3. This allows the network to learn geometric transformations explicitly
+
+    Example usage of grid_sample:
+        # Predict a flow field [B, 2, H, W] representing (x, y) offsets
+        flow = self.flow_predictor(features)
+
+        # Create base grid and add flow to get sampling coordinates
+        grid = create_base_grid(B, H, W) + flow
+
+        # Sample from input image using the predicted grid
+        warped = torch.nn.functional.grid_sample(
+            input_image,
+            grid.permute(0, 2, 3, 1),  # [B, H, W, 2]
+            mode='bilinear',
+            padding_mode='border',
+            align_corners=True
+        )
