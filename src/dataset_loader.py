@@ -1,3 +1,9 @@
+# Starter code provided by Roy Shilkrot
+
+# Computer Vision Final Project 
+# Daniel Choate: Tufts University
+
+
 """
 Document Reconstruction Dataset Loader
 =======================================
@@ -5,46 +11,6 @@ Document Reconstruction Dataset Loader
 This script provides a PyTorch dataset loader for the synthetic document dataset.
 Focus on implementing the reconstruction model and training loop.
 
-IMPORTANT: FOCUS ON GEOMETRIC RECONSTRUCTION, NOT PHOTOMETRIC MATCHING!
------------------------------------------------------------------------
-The rendered images include realistic lighting effects (shadows, shading, specular
-highlights). Even with perfect geometric dewarping, the lighting will NOT match
-the flat ground truth. This is expected and acceptable!
-
-Your goal: Learn the geometric transformation (UV mapping / flow field)
-NOT your goal: Match pixel intensities exactly (lighting is different!)
-
-Recommended approach:
-- Use SSIMLoss (focuses on structure, robust to lighting)
-- Predict flow fields with grid_sample (explicit geometric reasoning)
-- Evaluate with SSIM (structure) not just PSNR (pixels)
-- Use border masks to focus on document geometry
-
-Dataset Structure:
-    renders/synthetic_data_pitch_sweep/
-        ├── rgb/           # Input images (warped documents with backgrounds)
-        ├── ground_truth/  # Target images (flat paper - DIFFERENT LIGHTING!)
-        ├── depth/         # Depth maps (optional, for advanced methods)
-        ├── uv/           # UV maps (optional, for advanced methods)
-        └── border/       # Border masks (optional, for advanced methods)
-
-Usage Example:
-    from dataset_loader import DocumentDataset, get_dataloaders
-
-    # Quick start - get train and val dataloaders
-    train_loader, val_loader = get_dataloaders(
-        data_dir='renders/synthetic_data_pitch_sweep',
-        batch_size=8,
-        train_split=0.8
-    )
-
-    # Or create custom dataset
-    dataset = DocumentDataset(
-        data_dir='renders/synthetic_data_pitch_sweep',
-        use_depth=True,
-        use_uv=False,
-        transform=None
-    )
 """
 
 import os
@@ -488,242 +454,62 @@ def visualize_uv_flow(
     plt.show()
 
 
-
-
-# ********************** TRAINING AND MAIN LOOP ****************************
-
-def train_one_epoch(
-    model: nn.Module,
-    dataloader: DataLoader,
-    criterion: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    device: torch.device,
-    epoch: int
-) -> float:
+def visualize_flow_and_warp(model, batch, device, num_samples: int = 4):
     """
-    Train for one epoch.
-
-    TODO: Modify this to add:
-    - Additional metrics (PSNR, SSIM)
-    - Learning rate scheduling
-    - Gradient clipping
-    - Mixed precision training
-    - Logging to tensorboard/wandb
+    Visualize input, GT, warped output, and flow magnitude for a batch.
     """
-    model.train()
-    total_loss = 0.0
+    import matplotlib.pyplot as plt
 
-    for batch_idx, batch in enumerate(dataloader):
-        # Move data to device
-        rgb = batch['rgb'].to(device)
-        ground_truth = batch['ground_truth'].to(device)
-
-        # Optional: Load mask if using masked loss
-        mask = batch.get('border', None)
-        if mask is not None:
-            mask = mask.to(device)
-
-        # Forward pass
-        optimizer.zero_grad()
-        output = model(rgb)
-
-        # Compute loss (handles both standard and masked losses)
-        if isinstance(criterion, (MaskedL1Loss, MaskedMSELoss)):
-            loss = criterion(output, ground_truth, mask)
-        elif isinstance(criterion, SSIMLoss):
-            loss = criterion(output, ground_truth)
-        elif isinstance(criterion, UVReconstructionLoss):
-            # For advanced UV-based losses, extract additional outputs if available
-            # This assumes your model returns (image, uv, flow) - adapt as needed
-            losses = criterion(pred_image=output, target_image=ground_truth, mask=mask)
-            loss = losses['total']
-        else:
-            # Standard loss (MSE, L1, etc.)
-            loss = criterion(output, ground_truth)
-
-        # Backward pass
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-
-        # Print progress
-        if batch_idx % 10 == 0:
-            print(f"Epoch {epoch} [{batch_idx}/{len(dataloader)}] Loss: {loss.item():.4f}")
-
-    avg_loss = total_loss / len(dataloader)
-    return avg_loss
-
-
-def validate(
-    model: nn.Module,
-    dataloader: DataLoader,
-    criterion: nn.Module,
-    device: torch.device
-) -> float:
-    """
-    Validate the model.
-
-    TODO: Modify this to add more metrics here (PSNR, SSIM, etc.)
-    """
     model.eval()
-    total_loss = 0.0
-
     with torch.no_grad():
-        for batch in dataloader:
-            rgb = batch['rgb'].to(device)
-            ground_truth = batch['ground_truth'].to(device)
+        rgb = batch['rgb'].to(device)
+        outputs = model(rgb, predict_uv=False)
+        warped = outputs['warped']          # [B, 3, H, W]
+        flow = outputs['flow']              # [B, 2, H, W]
 
-            # Optional: Load mask if using masked loss
-            mask = batch.get('border', None)
-            if mask is not None:
-                mask = mask.to(device)
+    num_samples = min(num_samples, rgb.shape[0])
 
-            output = model(rgb)
+    mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(3, 1, 1)
+    std  = torch.tensor([0.229, 0.224, 0.225], device=device).view(3, 1, 1)
 
-            # Compute loss (handles both standard and masked losses)
-            if isinstance(criterion, (MaskedL1Loss, MaskedMSELoss)):
-                loss = criterion(output, ground_truth, mask)
-            elif isinstance(criterion, SSIMLoss):
-                loss = criterion(output, ground_truth)
-            elif isinstance(criterion, UVReconstructionLoss):
-                losses = criterion(pred_image=output, target_image=ground_truth, mask=mask)
-                loss = losses['total']
-            else:
-                loss = criterion(output, ground_truth)
+    fig, axes = plt.subplots(num_samples, 4, figsize=(18, 5 * num_samples))
+    if num_samples == 1:
+        axes = axes.reshape(1, 4)
 
-            total_loss += loss.item()
+    for i in range(num_samples):
+        # Denormalize
+        rgb_i = rgb[i] * std + mean
+        gt_i = batch['ground_truth'][i].to(device) * std + mean
+        warped_i = warped[i] * std + mean
 
-    avg_loss = total_loss / len(dataloader)
-    return avg_loss
+        rgb_np    = torch.clamp(rgb_i, 0, 1).permute(1, 2, 0).cpu().numpy()
+        gt_np     = torch.clamp(gt_i, 0, 1).permute(1, 2, 0).cpu().numpy()
+        warped_np = torch.clamp(warped_i, 0, 1).permute(1, 2, 0).cpu().numpy()
 
+        # Flow magnitude
+        flow_i = flow[i]                     # [2, H, W]
+        mag = torch.norm(flow_i, dim=0)      # [H, W] in roughly [0, 0.3*sqrt(2)]
+        mag_np = mag.cpu().numpy()
 
-# def main():
-#     """
-#     Main training loop - STARTER CODE
+        # Plots
+        axes[i, 0].imshow(rgb_np)
+        axes[i, 0].set_title(f"Input RGB - {batch['filename'][i]}")
+        axes[i, 0].axis('off')
 
-#     TODO: Modify this to customize for your experiments:
-#     1. Implement a better model architecture
-#     2. Try different loss functions
-#     3. Add learning rate scheduling
-#     4. Implement early stopping
-#     5. Add visualization and logging
-#     6. Experiment with data augmentation
-#     7. Use pretrained models from HuggingFace
-#     """
+        axes[i, 1].imshow(gt_np)
+        axes[i, 1].set_title("Ground Truth")
+        axes[i, 1].axis('off')
 
-#     # Configuration
-#     DATA_DIR = 'renders/synthetic_data_pitch_sweep'
-#     BATCH_SIZE = 8
-#     NUM_EPOCHS = 50
-#     LEARNING_RATE = 1e-4
-#     IMG_SIZE = (512, 512)
+        axes[i, 2].imshow(warped_np)
+        axes[i, 2].set_title("Warped (Predicted)")
+        axes[i, 2].axis('off')
 
-#     # Set device
-#     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-#     print(f"Using device: {device}")
+        im = axes[i, 3].imshow(mag_np, cmap='viridis')
+        axes[i, 3].set_title("Flow magnitude")
+        axes[i, 3].axis('off')
+        fig.colorbar(im, ax=axes[i, 3], fraction=0.046, pad=0.04)
 
-#     # Create dataloaders
-#     # IMPORTANT: Set use_border=True to enable masked losses!
-#     train_loader, val_loader = get_dataloaders(
-#         data_dir=DATA_DIR,
-#         batch_size=BATCH_SIZE,
-#         img_size=IMG_SIZE,
-#         use_depth=False,  # TODO: Set to True if you want to use depth information
-#         use_uv=False,     # TODO: Set to True if you want to use UV maps
-#         use_border=False  # TODO: Set to True if you want to use border masks for better training
-#     )
-
-#     # Visualize a batch (optional)
-#     sample_batch = next(iter(train_loader))
-#     print(f"Batch RGB shape: {sample_batch['rgb'].shape}")
-#     print(f"Batch GT shape: {sample_batch['ground_truth'].shape}")
-#     if 'border' in sample_batch:
-#         print(f"Batch Border mask shape: {sample_batch['border'].shape}")
-#     # visualize_batch(sample_batch)  # Uncomment to visualize
-
-#     # Create model
-#     model = DocumentReconstructionModel().to(device)
-#     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
-
-#     # TODO: Try different loss functions
-#     # Option 1: Simple losses (baseline, not recommended)
-#     criterion = nn.MSELoss()  # Simple L2 loss - sensitive to lighting!
-#     # criterion = nn.L1Loss()  # Try L1 loss - also sensitive to lighting
-
-#     # Option 2: SSIM Loss (RECOMMENDED - focuses on structure, not lighting!)
-#     # Uncomment this line (requires: pip install pytorch-msssim)
-#     # criterion = SSIMLoss()
-
-#     # Option 3: Masked losses (focuses on document pixels)
-#     # Uncomment these lines and set use_border=True above
-#     # criterion = MaskedL1Loss(use_mask=True)
-#     # criterion = MaskedMSELoss(use_mask=True)
-
-#     # Option 4: Combined loss with UV supervision (ADVANCED)
-#     # Uncomment and set use_uv=True, use_border=True above
-#     # criterion = UVReconstructionLoss(
-#     #     reconstruction_weight=1.0,
-#     #     uv_weight=0.5,
-#     #     smoothness_weight=0.01,
-#     #     use_mask=True,
-#     #     loss_type='ssim'  # Use SSIM for geometric reconstruction!
-#     # )
-
-#     # TODO: Try different optimizers
-#     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-#     # optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
-
-#     # Training loop
-#     best_val_loss = float('inf')
-
-#     for epoch in range(NUM_EPOCHS):
-#         print(f"\n{'='*50}")
-#         print(f"Epoch {epoch+1}/{NUM_EPOCHS}")
-#         print(f"{'='*50}")
-
-#         # Train
-#         train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device, epoch)
-#         print(f"Train Loss: {train_loss:.4f}")
-
-#         # Validate
-#         val_loss = validate(model, val_loader, criterion, device)
-#         print(f"Val Loss: {val_loss:.4f}")
-
-#         # Save best model
-#         if val_loss < best_val_loss:
-#             best_val_loss = val_loss
-#             torch.save(model.state_dict(), 'best_model.pth')
-#             print(f"Saved best model with val loss: {val_loss:.4f}")
-
-#     print("\nTraining complete!")
-#     print(f"Best validation loss: {best_val_loss:.4f}")
+    plt.tight_layout()
+    plt.show()
 
 
-# if __name__ == '__main__':
-#     # Example: Just load and visualize data
-#     print("Document Reconstruction Dataset Loader")
-#     print("="*50)
-
-#     # Quick test
-#     try:
-#         train_loader, val_loader = get_dataloaders(
-#             data_dir='renders/synthetic_data_pitch_sweep',
-#             batch_size=4,
-#             img_size=(512, 512)
-#         )
-
-#         print("\nDataset loaded successfully!")
-
-#         # Visualize a sample batch
-#         print("\nVisualizing a sample batch...")
-#         sample_batch = next(iter(train_loader))
-#         print(f"Batch shape - RGB: {sample_batch['rgb'].shape}, Ground Truth: {sample_batch['ground_truth'].shape}")
-#         visualize_batch(sample_batch, num_samples=min(4, sample_batch['rgb'].shape[0]))
-
-#         print("\nTo start training, uncomment the main() function call below")
-#         # main()  # Uncomment this to start training
-
-#     except Exception as e:
-#         print(f"\nError loading dataset: {e}")
-#         print("Please check that the data directory exists and contains the required files.")

@@ -257,6 +257,10 @@ class DocumentDataset(Dataset):
                     transforms.Resize(self.img_size),
                     transforms.ToTensor()
                 ])(border)
+
+                border_tensor = 1.0 - border_tensor      # invert so paper becomes white
+                border_tensor = (border_tensor > 0.5).float()  # threshold to {0,1}
+
                 sample['border'] = border_tensor
 
         return sample

@@ -18,8 +18,10 @@ import numpy as np
 
 from dataset_loader import get_dataloaders, visualize_batch
 # from reconstruction_model import DocumentReconstructionModel
-from reconstruction_model import ResNetUnet
-from reconstruction_model import MaskedL1Loss, MaskedMSELoss, SSIMLoss, UVReconstructionLoss
+# from reconstruction_model import ResNetUnet
+# from reconstruction_model import MaskedL1Loss, MaskedMSELoss, SSIMLoss, UVReconstructionLoss
+from model import ResNetUnet
+from model import MaskedL1Loss, MaskedMSELoss, SSIMLoss, UVReconstructionLoss
 
 
 # Training loop 
